@@ -1,12 +1,10 @@
 import os
 import io
-import cv2
 import numpy as np
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageFilter
 import face_recognition
 from stability_sdk import client
-import stability_sdk.interfaces.sprites_and_models_pb2 as components
 
 # --- CONFIGURATION DE LA PAGE STREAMLIT ---
 st.set_page_config(page_title="CleanSlate AI", page_icon="✨", layout="centered")
@@ -47,7 +45,6 @@ st.write("---")
 st.write("### 🔑 Configuration des accès")
 api_key = st.text_input("Clé API Stability AI :", type="password", placeholder="sk-...")
 
-# Importation des photos à traiter (Idéal pour le déploiement cloud)
 st.write("### 📂 Vos photos à analyser")
 fichiers_galerie = st.file_uploader(
     "Glissez-déposez les photos de votre galerie à trier/nettoyer :", 
@@ -59,13 +56,14 @@ st.write("---")
 st.write(f"### {titre_etape_1}")
 fichier_ref = st.file_uploader(placeholder_upload, type=["jpg", "jpeg", "png"])
 
-# --- FONCTION DE SEGMENTATION AVANCÉE ---
-def generer_masque_silhouette(image_bgr, enc_cible, tolerance=0.6):
-    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    locations = face_recognition.face_locations(image_rgb)
-    encodings = face_recognition.face_encodings(image_rgb, locations)
+# --- FONCTION DE SEGMENTATION FLUIDE AVEC PILLOW ---
+def generer_masque_pillow(img_pil, enc_cible, tolerance=0.6):
+    image_np = np.array(img_pil)
+    locations = face_recognition.face_locations(image_np)
+    encodings = face_recognition.face_encodings(image_np, locations)
     
-    masque = np.zeros(image_bgr.shape[:2], dtype=np.uint8)
+    # Créer un masque noir à la taille de l'image
+    masque = Image.new("L", img_pil.size, 0)
     cible_trouvee = False
     
     for (top, right, bottom, left), enc_visage in zip(locations, encodings):
@@ -76,44 +74,32 @@ def generer_masque_silhouette(image_bgr, enc_cible, tolerance=0.6):
             hauteur = bottom - top
             largeur = right - left
             
-            # Extension de la boîte pour capturer le corps/silhouette de la personne
-            top_c = max(0, top - int(hauteur * 0.2))
-            bottom_c = min(image_bgr.shape[0], bottom + int(hauteur * 4.5))
-            left_c = max(0, left - int(largeur * 0.8))
-            right_c = min(image_bgr.shape[1], right + int(largeur * 0.8))
+            # Extension pour englober la silhouette de la personne de haut en bas
+            top_c = max(0, top - int(hauteur * 0.3))
+            bottom_c = min(img_pil.size[1], bottom + int(hauteur * 5.0))
+            left_c = max(0, left - int(largeur * 1.0))
+            right_c = min(img_pil.size[0], right + int(largeur * 1.0))
             
-            # Application de GrabCut pour isoler la silhouette proprement
-            bgdModel = np.zeros((1, 65), np.float64)
-            fgdModel = np.zeros((1, 65), np.float64)
-            rect = (left_c, top_c, right_c - left_c, bottom_c - top_c)
-            
-            masque_local = np.zeros(image_bgr.shape[:2], dtype=np.uint8)
-            try:
-                cv2.grabCut(image_bgr, masque_local, rect, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_RECT)
-                masque_silhouette = np.where((masque_local == 2) | (masque_local == 0), 0, 255).astype('uint8')
-                masque = cv2.bitwise_or(masque, masque_silhouette)
-            except Exception:
-                # Fallback si GrabCut échoue sur les bords
-                cv2.rectangle(masque, (left_c, top_c), (right_c, bottom_c), 255, -1)
+            # Dessiner un rectangle blanc sur le masque là où se trouve la silhouette
+            from PIL import ImageDraw
+            draw = ImageDraw.Draw(masque)
+            draw.rectangle([left_c, top_c, right_c, bottom_c], fill=255)
                 
-    masque_floute = cv2.GaussianBlur(masque, (21, 21), 0)
+    # Flouter les contours du masque pour une transition invisible
+    masque_floute = masque.filter(ImageFilter.GaussianBlur(radius=15))
     return cible_trouvee, masque_floute
 
 # --- PIPELINE PRINCIPAL DE TRAITEMENT ---
 if fichier_ref and api_key and fichiers_galerie:
-    # Affichage de la cible
     img_ref_pil = Image.open(fichier_ref)
     st.image(img_ref_pil, caption="Visage cible à effacer", width=150)
     
-    # Paramètres algorithmiques
     tolerance = st.slider("Sensibilité de l'IA (Plus bas = plus strict)", 0.4, 0.7, 0.6, 0.05)
     action_ia = st.selectbox("Action souhaitée sur les souvenirs :", ["✨ Effacer et recréer par IA (Inpainting)", "🗃️ Isoler les photos"])
     
     if st.button("🚀 Lancer la libération numérique"):
-        # Initialisation du client de génération Stability AI
         stability_api = client.StabilityInference(key=api_key, engine="stable-diffusion-xl-1024-v1-0")
         
-        # Étape A : Encodage facial de la cible
         img_ref_rec = face_recognition.load_image_file(fichier_ref)
         encodings_ref = face_recognition.face_encodings(img_ref_rec)
         
@@ -126,42 +112,31 @@ if fichier_ref and api_key and fichiers_galerie:
             status_text = st.empty()
             compteur_modifie = 0
             
-            # Étape B : Itération sur les fichiers téléversés
             for index, fichier in enumerate(fichiers_galerie):
                 status_text.text(f"Analyse de {fichier.name}...")
                 
-                # Conversion du fichier téléversé en format OpenCV/BGR
-                file_bytes = np.asarray(bytearray(fichier.read()), dtype=np.uint8)
-                image_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-                
-                trouve, masque_ex = generer_masque_silhouette(image_bgr, cible_encoding, tolerance)
+                img_init_pil = Image.open(fichier).convert("RGB")
+                trouve, masque_ex = generer_masque_pillow(img_init_pil, cible_encoding, tolerance)
                 
                 if trouve:
                     if action_ia == "🗃️ Isoler les photos":
                         st.warning(f"⚠️ Cible détectée sur : {fichier.name}")
-                        st.image(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB), caption=f"Identifié : {fichier.name}", width=300)
+                        st.image(img_init_pil, caption=f"Identifié : {fichier.name}", width=300)
                         compteur_modifie += 1
                     else:
-                        # Mode Inpainting IA
-                        img_init_pil = Image.fromarray(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
-                        img_mask_pil = Image.fromarray(masque_ex)
-                        
                         try:
-                            # Requête vers Stability AI
                             answers = stability_api.generate(
                                 prompt=prompt_inpainting,
                                 init_image=img_init_pil,
-                                mask_image=img_mask_pil,
+                                mask_image=masque_ex,
                                 steps=30,
                                 cfg_scale=7.0
                             )
                             
                             for resp in answers:
                                 for artifact in resp.artifacts:
-                                    if artifact.type == components.ARTIFACT_IMAGE:
+                                    if artifact.type.name == "ARTIFACT_IMAGE":
                                         img_finale = Image.open(io.BytesIO(artifact.binary))
-                                        
-                                        # Affichage et téléchargement
                                         st.image(img_finale, caption=f"✨ {fichier.name} nettoyé !", width=400)
                                         
                                         buf = io.BytesIO()
