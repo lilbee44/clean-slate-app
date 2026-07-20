@@ -1,22 +1,19 @@
 # =============================================================
-#  slate. — CleanSlate AI  (v2)
+#  slate. — CleanSlate AI  (v2.1)
 #  Tri & nettoyage de photos après une rupture amoureuse ou amicale
-#  Streamlit + face_recognition (100% local) + Stability AI (inpainting cloud, optionnel)
+#  Moteur IA : OpenCV (YuNet + SFace) — 100% local, aucune compilation
+#  Inpainting cloud optionnel : Stability AI
 # =============================================================
 
 import io
+import os
 import zipfile
+import urllib.request
 import numpy as np
 import streamlit as st
 import requests
+import cv2
 from PIL import Image, ImageFilter, ImageDraw
-
-# --- Import protégé : face_recognition (dlib) est la dépendance délicate ---
-try:
-    import face_recognition
-    FACE_OK = True
-except ImportError:
-    FACE_OK = False
 
 # =============================================================
 # CONFIGURATION & STYLE
@@ -54,35 +51,73 @@ input, select, textarea, .stFileUploader {
 """, unsafe_allow_html=True)
 
 # =============================================================
-# ÉTAT DE SESSION
-# Confidentialité : on ne conserve QUE l'encodage de la cible.
-# Les encodages des autres visages ne sont jamais stockés.
+# MOTEUR IA — OpenCV YuNet (détection) + SFace (reconnaissance)
+# Les modèles (~40 Mo) sont téléchargés une seule fois puis mis en cache.
 # =============================================================
-if "scan" not in st.session_state:
-    st.session_state.scan = None          # résultats du scan
-if "target_encoding" not in st.session_state:
-    st.session_state.target_encoding = None
-if "corbeille" not in st.session_state:
-    st.session_state.corbeille = []       # corbeille temporaire in-app (dernière chance)
+MODELES = {
+    "yunet": ("face_detection_yunet_2023mar.onnx",
+              "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"),
+    "sface": ("face_recognition_sface_2021dec.onnx",
+              "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"),
+}
 
-# =============================================================
-# FONCTIONS
-# =============================================================
-def detecter_cible(img_pil, enc_cible, tolerance):
-    """Retourne la liste des boîtes (top, right, bottom, left) où la cible apparaît."""
-    image_np = np.array(img_pil)
-    locations = face_recognition.face_locations(image_np)
-    if not locations:
-        return []
-    encodings = face_recognition.face_encodings(image_np, locations)
+@st.cache_resource(show_spinner="🧠 Préparation du moteur IA (première fois uniquement)…")
+def charger_moteur():
+    os.makedirs("models", exist_ok=True)
+    chemins = {}
+    for cle, (fichier, url) in MODELES.items():
+        chemin = os.path.join("models", fichier)
+        if not os.path.exists(chemin):
+            urllib.request.urlretrieve(url, chemin)
+        chemins[cle] = chemin
+    detecteur = cv2.FaceDetectorYN_create(chemins["yunet"], "", (320, 320), 0.7, 0.3, 5000)
+    reconnaisseur = cv2.FaceRecognizerSF_create(chemins["sface"], "")
+    return detecteur, reconnaisseur
+
+
+def _visages(img_pil):
+    """Détecte tous les visages d'une image. Retourne (image BGR, tableau de visages)."""
+    detecteur, _ = charger_moteur()
+    bgr = cv2.cvtColor(np.array(img_pil.convert("RGB")), cv2.COLOR_RGB2BGR)
+    h, w = bgr.shape[:2]
+    detecteur.setInputSize((w, h))
+    _, faces = detecteur.detect(bgr)
+    if faces is None:
+        faces = np.empty((0, 15), dtype=np.float32)
+    return bgr, faces
+
+
+def encodage_reference(img_pil):
+    """Empreinte du visage cible à partir de la photo de référence (plus grand visage)."""
+    _, reconnaisseur = charger_moteur()
+    bgr, faces = _visages(img_pil)
+    if len(faces) == 0:
+        return None
+    visage = max(faces, key=lambda f: f[2] * f[3])
+    aligne = reconnaisseur.alignCrop(bgr, visage)
+    return reconnaisseur.feature(aligne)
+
+
+def detecter_cible(img_pil, enc_cible, seuil):
+    """Retourne les boîtes (top, right, bottom, left) où la cible apparaît."""
+    _, reconnaisseur = charger_moteur()
+    bgr, faces = _visages(img_pil)
+    H, W = bgr.shape[:2]
     boxes = []
-    for loc, enc in zip(locations, encodings):
-        if face_recognition.compare_faces([enc_cible], enc, tolerance=tolerance)[0]:
-            boxes.append(loc)
-    # Les encodages des visages tiers sortent de portée ici : rien n'est conservé.
+    for f in faces:
+        aligne = reconnaisseur.alignCrop(bgr, f)
+        empreinte = reconnaisseur.feature(aligne)
+        score = reconnaisseur.match(empreinte, enc_cible, cv2.FaceRecognizerSF_FR_COSINE)
+        if score >= seuil:
+            x, y, w, h = (int(v) for v in f[:4])
+            boxes.append((max(0, y), min(W, x + w), min(H, y + h), max(0, x)))
+    # Les empreintes des visages tiers sortent de portée ici : rien n'est conservé.
     return boxes
 
 
+# =============================================================
+# TRANSFORMATIONS D'IMAGE
+# =============================================================
 def boite_corps(box, size):
     """Étend la boîte du visage vers le corps (pour masque / flou plein pied)."""
     top, right, bottom, left = box
@@ -122,17 +157,16 @@ def sticker_emoji(img_pil, boxes):
         pad = int(w * 0.25)
         l, t, r, b = left - pad, top - pad, right + pad, bottom + pad
         draw.ellipse([l, t, r, b], fill="#FFD34D", outline="#B8860B", width=3)
-        ew = (r - l) // 8
+        ew = max(1, (r - l) // 8)
         cy = t + (b - t) // 3
-        draw.ellipse([l + 2*ew, cy, l + 3*ew, cy + ew], fill="#1f2937")          # œil gauche
-        draw.ellipse([r - 3*ew, cy, r - 2*ew, cy + ew], fill="#1f2937")          # œil droit
+        draw.ellipse([l + 2*ew, cy, l + 3*ew, cy + ew], fill="#1f2937")
+        draw.ellipse([r - 3*ew, cy, r - 2*ew, cy + ew], fill="#1f2937")
         draw.arc([l + 2*ew, t + (b-t)//2, r - 2*ew, b - ew], 20, 160, fill="#1f2937", width=max(3, ew//2))
     return out
 
 
 def inpainting_stability(img_pil, masque, api_key, prompt):
     """Efface la cible et recrée le décor via l'API REST Stability (v2beta)."""
-    # Redimensionner pour rester dans les limites API et maîtriser le coût
     img = img_pil.copy()
     img.thumbnail((1536, 1536))
     msk = masque.resize(img.size)
@@ -154,16 +188,21 @@ def inpainting_stability(img_pil, masque, api_key, prompt):
 
 
 # =============================================================
+# ÉTAT DE SESSION
+# Confidentialité : on ne conserve QUE l'empreinte de la cible.
+# =============================================================
+if "scan" not in st.session_state:
+    st.session_state.scan = None
+if "target_encoding" not in st.session_state:
+    st.session_state.target_encoding = None
+
+# =============================================================
 # ÉCRAN 1 — ONBOARDING
 # =============================================================
 st.markdown("<h1>slate.</h1>", unsafe_allow_html=True)
 st.markdown("<p class='subtitle-app'>Prêt(e) à tourner la page ? L'IA s'occupe du tri numérique, à votre rythme.<br>"
             "🔒 <b>La reconnaissance faciale tourne 100% en local.</b> Seul l'inpainting (optionnel) passe par le cloud.</p>",
             unsafe_allow_html=True)
-
-if not FACE_OK:
-    st.error("Le module `face_recognition` n'est pas installé. Voir le README pour l'installation de dlib.")
-    st.stop()
 
 st.write("### 🧭 De qui souhaitez-vous vous détacher aujourd'hui ?")
 type_rupture = st.radio(
@@ -194,24 +233,25 @@ fichiers_galerie = st.file_uploader("Glissez-déposez les photos à trier / nett
                                     type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 with st.expander("🎛️ Réglages"):
-    tolerance = st.slider("Sensibilité de l'IA (plus bas = plus strict)", 0.40, 0.70, 0.60, 0.05)
+    seuil = st.slider("Seuil de correspondance (plus haut = plus strict)", 0.25, 0.50, 0.36, 0.01)
+    st.caption("Si l'IA rate des photos de la cible, baissez le seuil. Si elle détecte d'autres personnes, montez-le.")
 
 # =============================================================
 # ÉCRAN 3 — SCAN (LA JAUGE DE LIBÉRATION)
 # =============================================================
 if fichier_ref and fichiers_galerie:
     if st.button("🚀 Lancer le scan"):
-        img_ref = face_recognition.load_image_file(fichier_ref)
-        encs = face_recognition.face_encodings(img_ref)
-        if not encs:
+        img_ref = Image.open(fichier_ref).convert("RGB")
+        enc = encodage_reference(img_ref)
+        if enc is None:
             st.error("Aucun visage détecté sur la photo de référence. Essayez une photo plus nette, de face.")
         else:
-            st.session_state.target_encoding = encs[0]
+            st.session_state.target_encoding = enc
             resultats = []
             barre = st.progress(0, text="Analyse en cours…")
             for i, f in enumerate(fichiers_galerie):
                 img = Image.open(f).convert("RGB")
-                boxes = detecter_cible(img, st.session_state.target_encoding, tolerance)
+                boxes = detecter_cible(img, enc, seuil)
                 if boxes:
                     resultats.append({"nom": f.name, "image": img, "boxes": boxes, "garder": True})
                 pct = int((i + 1) / len(fichiers_galerie) * 100)
@@ -235,7 +275,7 @@ if st.session_state.scan:
     c2.metric("Photos analysées", scan["total"])
 
     if n == 0:
-        st.info("Aucune photo contenant la cible n'a été détectée. Essayez d'augmenter la sensibilité.")
+        st.info("Aucune photo contenant la cible n'a été détectée. Essayez de baisser le seuil dans les Réglages.")
     else:
         st.write("#### Cochez les photos à traiter (contrôle total) :")
         cols = st.columns(3)
@@ -247,7 +287,6 @@ if st.session_state.scan:
         selection = [r for r in scan["resultats"] if r["garder"]]
         st.write(f"**{len(selection)} photo(s) sélectionnée(s).**")
 
-        # ------------------ CHOIX DE L'ACTION ------------------
         st.write("### ⚡ Action")
         action = st.selectbox("Que fait-on de ces souvenirs ?", [
             "🗃️ Quarantaine — Archiver loin des yeux (ZIP)",
@@ -264,7 +303,6 @@ if st.session_state.scan:
 
         if selection and st.button("🚀 Lancer la libération numérique"):
 
-            # ---- 1. QUARANTAINE : zip téléchargeable ----
             if "Quarantaine" in action:
                 buf = io.BytesIO()
                 with zipfile.ZipFile(buf, "w") as z:
@@ -277,7 +315,6 @@ if st.session_state.scan:
                 st.caption("Conseil : confiez ce zip à un(e) 'Gardien(ne)' de confiance, ou stockez-le hors de vue "
                            "avec un verrou temporel (ex : ne pas rouvrir avant 3 mois).")
 
-            # ---- 2 & 3 & 4. TRANSFORMATIONS avec aperçu avant/après ----
             else:
                 traitees = 0
                 barre = st.progress(0)
@@ -294,7 +331,6 @@ if st.session_state.scan:
                             masque = generer_masque(r["image"], r["boxes"])
                             img_finale = inpainting_stability(r["image"], masque, api_key, prompt_inpainting)
 
-                        # Aperçu Avant / Après (le Choc Visuel)
                         a, b = st.columns(2)
                         a.image(r["image"], caption=f"Avant — {r['nom']}", use_container_width=True)
                         b.image(img_finale, caption="Après ✨", use_container_width=True)
@@ -302,7 +338,6 @@ if st.session_state.scan:
                         buf = io.BytesIO(); img_finale.save(buf, format="JPEG")
                         st.download_button(f"⬇️ Télécharger {r['nom']}", buf.getvalue(),
                                            f"cleanslate_{r['nom']}", "image/jpeg", key=f"dl_{i}")
-                        st.session_state.corbeille.append(r["nom"])  # trace 'dernière chance'
                         traitees += 1
                     except Exception as e:
                         st.warning(f"Erreur sur {r['nom']} : {e}")
@@ -321,7 +356,6 @@ with col_a:
     if st.button("🧹 Réinitialiser la session"):
         st.session_state.scan = None
         st.session_state.target_encoding = None
-        st.session_state.corbeille = []
         st.rerun()
 with col_b:
     st.caption("🔒 RGPD : seuls les pixels affichés et l'empreinte de la cible existent le temps de la session. "
