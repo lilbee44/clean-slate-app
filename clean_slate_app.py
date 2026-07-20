@@ -1,8 +1,7 @@
 # =============================================================
-#  slate. — CleanSlate AI  (v2.1)
-#  Tri & nettoyage de photos après une rupture amoureuse ou amicale
-#  Moteur IA : OpenCV (YuNet + SFace) — 100% local, aucune compilation
-#  Inpainting cloud optionnel : Stability AI
+#  slate. — CleanSlate AI  (v2.2)
+#  UI "maquette" : fond clair, mobile-first, cartes, anneau de progression
+#  Moteur IA : OpenCV (YuNet + SFace) — 100% local
 # =============================================================
 
 import io
@@ -16,43 +15,84 @@ import cv2
 from PIL import Image, ImageFilter, ImageDraw
 
 # =============================================================
-# CONFIGURATION & STYLE
+# CONFIGURATION & STYLE (design maquette)
 # =============================================================
 st.set_page_config(page_title="slate. — CleanSlate AI", page_icon="✨", layout="centered")
 
 st.markdown("""
 <style>
+/* ---- Fond clair dégradé crème -> lavande (comme la maquette) ---- */
 .stApp {
-  background: linear-gradient(135deg, #0b0f19 0%, #111827 50%, #1e1b4b 100%) !important;
-  color: #f3f4f6 !important;
-  font-family: 'Inter', -apple-system, sans-serif;
+  background: linear-gradient(165deg, #fbf7f1 0%, #f7f5fc 45%, #e9e9f8 100%) !important;
+  color: #1f2937 !important;
+  font-family: -apple-system, 'Inter', 'Segoe UI', sans-serif;
 }
-h1 {
-  font-weight: 800 !important; letter-spacing: -1px !important;
-  background: linear-gradient(90deg, #6366f1, #a855f7) !important;
-  -webkit-background-clip: text !important; -webkit-text-fill-color: transparent !important;
+.block-container { max-width: 680px !important; padding-top: 2.2rem !important; }
+
+/* ---- Typo ---- */
+h1, h2, h3, h4, p, li, label, span { color: #1f2937 !important; }
+.logo-slate {
+  font-size: 2.1rem; font-weight: 800; letter-spacing: -1px;
+  color: #1f2937 !important; text-align: center; margin-bottom: .2rem;
 }
-.subtitle-app { color: #9ca3af !important; font-size: 1.1rem !important; margin-bottom: 1.5rem !important; }
-input, select, textarea, .stFileUploader {
-  background-color: rgba(17,24,39,.7) !important;
-  border: 1px solid rgba(255,255,255,.1) !important;
-  border-radius: 12px !important; color: #f3f4f6 !important;
+.logo-slate .dot { color: #4f6df5 !important; }
+.hero-title { font-size: 1.9rem; font-weight: 800; text-align: center; margin: .4rem 0 .6rem; }
+.hero-sub { text-align: center; color: #6b7280 !important; font-size: 1.02rem; line-height: 1.5; }
+.hero-phoenix { font-size: 4.6rem; text-align: center; margin: 1rem 0 .4rem; }
+.secure-note { text-align:center; color:#6b7280 !important; font-size:.85rem; margin-top:.7rem; }
+.step-label { text-align:center; letter-spacing:2px; font-size:.8rem; color:#9ca3af !important; font-weight:600; }
+
+/* ---- Cartes blanches ---- */
+div[data-testid="stFileUploader"] section {
+  background: #ffffff !important; border: 1px solid #e7e7f0 !important;
+  border-radius: 16px !important; box-shadow: 0 2px 10px rgba(31,41,55,.05) !important;
 }
-.stButton>button {
-  background: linear-gradient(90deg, #4f46e5, #6366f1) !important;
-  color: white !important; font-weight: 600 !important; border: none !important;
-  border-radius: 12px !important; padding: .7rem 1.5rem !important;
-  box-shadow: 0 4px 14px rgba(79,70,229,.4) !important; width: 100%;
-  transition: all .25s ease !important;
+div[data-testid="stFileUploader"] section * { color:#374151 !important; }
+div[data-testid="stExpander"] {
+  background:#ffffff !important; border:1px solid #e7e7f0 !important;
+  border-radius:16px !important; box-shadow:0 2px 10px rgba(31,41,55,.05) !important;
+}
+
+/* ---- Radios en cartes (parcours & actions) ---- */
+div[role="radiogroup"] > label {
+  background:#ffffff !important; border:1px solid #e7e7f0 !important;
+  border-radius:14px !important; padding:.85rem 1rem !important;
+  margin-bottom:.55rem !important; width:100%;
+  box-shadow:0 2px 8px rgba(31,41,55,.05);
+  transition: border-color .15s ease;
+}
+div[role="radiogroup"] > label:hover { border-color:#4f6df5 !important; }
+
+/* ---- Boutons bleus arrondis (comme "Connecter ma galerie") ---- */
+.stButton>button, .stDownloadButton>button {
+  background: linear-gradient(90deg, #3b5bfd, #4f6df5) !important;
+  color:#ffffff !important; font-weight:600 !important; border:none !important;
+  border-radius:999px !important; padding:.72rem 1.5rem !important;
+  box-shadow:0 6px 16px rgba(59,91,253,.28) !important; width:100%;
+  transition: transform .15s ease !important;
 }
 .stButton>button:hover { transform: translateY(-2px) !important; }
-#MainMenu, footer, header {visibility: hidden;}
+.stButton>button * , .stDownloadButton>button * { color:#ffffff !important; }
+
+/* ---- Anneau de progression 'Diagnostic' ---- */
+.ring { width:220px; height:220px; border-radius:50%; margin:1rem auto;
+        display:flex; align-items:center; justify-content:center; }
+.ring-inner { width:176px; height:176px; background:#ffffff; border-radius:50%;
+        display:flex; flex-direction:column; align-items:center; justify-content:center;
+        box-shadow: inset 0 2px 8px rgba(31,41,55,.06); }
+.ring-num { font-size:3.2rem; font-weight:800; color:#1f2937 !important; line-height:1; }
+.ring-label { font-size:.85rem; color:#6b7280 !important; margin-top:.3rem; }
+
+/* ---- Divers ---- */
+div[data-testid="stMetricValue"] { color:#1f2937 !important; }
+div[data-testid="stMetricLabel"] * { color:#6b7280 !important; }
+.stCaption, small { color:#6b7280 !important; }
+#MainMenu, footer, header {visibility:hidden;}
 </style>
 """, unsafe_allow_html=True)
 
 # =============================================================
 # MOTEUR IA — OpenCV YuNet (détection) + SFace (reconnaissance)
-# Les modèles (~40 Mo) sont téléchargés une seule fois puis mis en cache.
 # =============================================================
 MODELES = {
     "yunet": ("face_detection_yunet_2023mar.onnx",
@@ -76,7 +116,6 @@ def charger_moteur():
 
 
 def _visages(img_pil):
-    """Détecte tous les visages d'une image. Retourne (image BGR, tableau de visages)."""
     detecteur, _ = charger_moteur()
     bgr = cv2.cvtColor(np.array(img_pil.convert("RGB")), cv2.COLOR_RGB2BGR)
     h, w = bgr.shape[:2]
@@ -88,7 +127,6 @@ def _visages(img_pil):
 
 
 def encodage_reference(img_pil):
-    """Empreinte du visage cible à partir de la photo de référence (plus grand visage)."""
     _, reconnaisseur = charger_moteur()
     bgr, faces = _visages(img_pil)
     if len(faces) == 0:
@@ -99,7 +137,6 @@ def encodage_reference(img_pil):
 
 
 def detecter_cible(img_pil, enc_cible, seuil):
-    """Retourne les boîtes (top, right, bottom, left) où la cible apparaît."""
     _, reconnaisseur = charger_moteur()
     bgr, faces = _visages(img_pil)
     H, W = bgr.shape[:2]
@@ -111,7 +148,6 @@ def detecter_cible(img_pil, enc_cible, seuil):
         if score >= seuil:
             x, y, w, h = (int(v) for v in f[:4])
             boxes.append((max(0, y), min(W, x + w), min(H, y + h), max(0, x)))
-    # Les empreintes des visages tiers sortent de portée ici : rien n'est conservé.
     return boxes
 
 
@@ -119,18 +155,14 @@ def detecter_cible(img_pil, enc_cible, seuil):
 # TRANSFORMATIONS D'IMAGE
 # =============================================================
 def boite_corps(box, size):
-    """Étend la boîte du visage vers le corps (pour masque / flou plein pied)."""
     top, right, bottom, left = box
     h, w = bottom - top, right - left
     W, H = size
-    return (max(0, left - w),
-            max(0, top - int(h * 0.4)),
-            min(W, right + w),
-            min(H, bottom + int(h * 5)))
+    return (max(0, left - w), max(0, top - int(h * 0.4)),
+            min(W, right + w), min(H, bottom + int(h * 5)))
 
 
 def generer_masque(img_pil, boxes):
-    """Masque blanc (zone à effacer) sur fond noir, bords adoucis."""
     masque = Image.new("L", img_pil.size, 0)
     draw = ImageDraw.Draw(masque)
     for box in boxes:
@@ -139,7 +171,6 @@ def generer_masque(img_pil, boxes):
 
 
 def flou_cinematique(img_pil, boxes):
-    """Flou bokeh progressif uniquement sur le visage/corps de la cible (local, gratuit)."""
     out = img_pil.copy()
     for box in boxes:
         l, t, r, b = boite_corps(box, img_pil.size)
@@ -149,7 +180,6 @@ def flou_cinematique(img_pil, boxes):
 
 
 def sticker_emoji(img_pil, boxes):
-    """Remplace le visage par un smiley dessiné (local, gratuit, effet parodique)."""
     out = img_pil.copy()
     draw = ImageDraw.Draw(out)
     for (top, right, bottom, left) in boxes:
@@ -166,15 +196,12 @@ def sticker_emoji(img_pil, boxes):
 
 
 def inpainting_stability(img_pil, masque, api_key, prompt):
-    """Efface la cible et recrée le décor via l'API REST Stability (v2beta)."""
     img = img_pil.copy()
     img.thumbnail((1536, 1536))
     msk = masque.resize(img.size)
-
     buf_img, buf_msk = io.BytesIO(), io.BytesIO()
     img.save(buf_img, format="PNG")
     msk.save(buf_msk, format="PNG")
-
     r = requests.post(
         "https://api.stability.ai/v2beta/stable-image/edit/inpaint",
         headers={"authorization": f"Bearer {api_key}", "accept": "image/*"},
@@ -189,174 +216,215 @@ def inpainting_stability(img_pil, masque, api_key, prompt):
 
 # =============================================================
 # ÉTAT DE SESSION
-# Confidentialité : on ne conserve QUE l'empreinte de la cible.
 # =============================================================
+if "etape" not in st.session_state:
+    st.session_state.etape = "accueil"
 if "scan" not in st.session_state:
     st.session_state.scan = None
 if "target_encoding" not in st.session_state:
     st.session_state.target_encoding = None
 
-# =============================================================
-# ÉCRAN 1 — ONBOARDING
-# =============================================================
-st.markdown("<h1>slate.</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle-app'>Prêt(e) à tourner la page ? L'IA s'occupe du tri numérique, à votre rythme.<br>"
-            "🔒 <b>La reconnaissance faciale tourne 100% en local.</b> Seul l'inpainting (optionnel) passe par le cloud.</p>",
-            unsafe_allow_html=True)
 
-st.write("### 🧭 De qui souhaitez-vous vous détacher aujourd'hui ?")
-type_rupture = st.radio(
-    "Parcours",
-    ["💔 Une relation amoureuse (Parcours Nouvelle Page)",
-     "🛑 Une relation amicale (Parcours Tri Sélectif)"],
-    index=0, label_visibility="collapsed",
-)
+def logo():
+    st.markdown("<div class='logo-slate'>slate<span class='dot'>.</span></div>", unsafe_allow_html=True)
 
-if "amoureuse" in type_rupture:
-    titre_casting = "📸 'Le Casting' — Qui est votre ex-partenaire ?"
-    message_succes = "🎉 Bravo. Vous venez de tourner la page — prenez soin de votre cœur."
-    prompt_defaut = "empty scenic background, natural continuation, realistic photo, high resolution"
-else:
-    titre_casting = "📸 'Le Casting' — Qui est l'ancien(ne) ami(e) ?"
-    message_succes = "🎉 Limites posées. Place aux relations saines et équilibrées."
-    prompt_defaut = "group of friends smiling, seamless background continuation, realistic photo, high resolution"
 
 # =============================================================
-# ÉCRAN 2 — IDENTIFICATION & GALERIE
+# ÉCRAN 1 — ONBOARDING (maquette : phénix + Connecter ma galerie)
 # =============================================================
-st.write(f"### {titre_casting}")
-fichier_ref = st.file_uploader("Une photo claire de la personne, seule de préférence",
-                               type=["jpg", "jpeg", "png"])
-
-st.write("### 📂 Votre galerie à analyser")
-fichiers_galerie = st.file_uploader("Glissez-déposez les photos à trier / nettoyer",
-                                    type=["jpg", "jpeg", "png"], accept_multiple_files=True)
-
-with st.expander("🎛️ Réglages"):
-    seuil = st.slider("Seuil de correspondance (plus haut = plus strict)", 0.25, 0.50, 0.36, 0.01)
-    st.caption("Si l'IA rate des photos de la cible, baissez le seuil. Si elle détecte d'autres personnes, montez-le.")
-
-# =============================================================
-# ÉCRAN 3 — SCAN (LA JAUGE DE LIBÉRATION)
-# =============================================================
-if fichier_ref and fichiers_galerie:
-    if st.button("🚀 Lancer le scan"):
-        img_ref = Image.open(fichier_ref).convert("RGB")
-        enc = encodage_reference(img_ref)
-        if enc is None:
-            st.error("Aucun visage détecté sur la photo de référence. Essayez une photo plus nette, de face.")
-        else:
-            st.session_state.target_encoding = enc
-            resultats = []
-            barre = st.progress(0, text="Analyse en cours…")
-            for i, f in enumerate(fichiers_galerie):
-                img = Image.open(f).convert("RGB")
-                boxes = detecter_cible(img, enc, seuil)
-                if boxes:
-                    resultats.append({"nom": f.name, "image": img, "boxes": boxes, "garder": True})
-                pct = int((i + 1) / len(fichiers_galerie) * 100)
-                barre.progress((i + 1) / len(fichiers_galerie),
-                               text=f"🧠 {pct}% de ton espace mental libéré…")
-            barre.empty()
-            st.session_state.scan = {"total": len(fichiers_galerie), "resultats": resultats}
-            if resultats:
-                st.balloons()
-
-# =============================================================
-# ÉCRAN 4 — DIAGNOSTIC (TABLEAU DE BORD)
-# =============================================================
-if st.session_state.scan:
-    scan = st.session_state.scan
-    n = len(scan["resultats"])
-
-    st.write("## 📊 'Diagnostic'")
-    c1, c2 = st.columns(2)
-    c1.metric("Photos identifiées", n)
-    c2.metric("Photos analysées", scan["total"])
-
-    if n == 0:
-        st.info("Aucune photo contenant la cible n'a été détectée. Essayez de baisser le seuil dans les Réglages.")
-    else:
-        st.write("#### Cochez les photos à traiter (contrôle total) :")
-        cols = st.columns(3)
-        for i, r in enumerate(scan["resultats"]):
-            with cols[i % 3]:
-                st.image(r["image"], use_container_width=True)
-                r["garder"] = st.checkbox(r["nom"], value=r["garder"], key=f"chk_{i}")
-
-        selection = [r for r in scan["resultats"] if r["garder"]]
-        st.write(f"**{len(selection)} photo(s) sélectionnée(s).**")
-
-        st.write("### ⚡ Action")
-        action = st.selectbox("Que fait-on de ces souvenirs ?", [
-            "🗃️ Quarantaine — Archiver loin des yeux (ZIP)",
-            "🌫️ Flou Cinématique — Bokeh sur la cible (gratuit, local)",
-            "🙂 Sticker Emoji — Effet parodique (gratuit, local)",
-            "✨ Remplacement Invisible — Effacer & recréer le décor (Stability AI)",
-        ])
-
-        api_key, prompt_inpainting = None, prompt_defaut
-        if "Stability" in action:
-            api_key = st.text_input("🔑 Clé API Stability AI", type="password", placeholder="sk-...")
-            prompt_inpainting = st.text_input("Prompt de remplacement (modifiable)", value=prompt_defaut)
-            st.caption("💡 Idées virales : remplacez le prompt par *'a cute golden retriever'* ou *'a fluffy llama'*.")
-
-        if selection and st.button("🚀 Lancer la libération numérique"):
-
-            if "Quarantaine" in action:
-                buf = io.BytesIO()
-                with zipfile.ZipFile(buf, "w") as z:
-                    for r in selection:
-                        b = io.BytesIO(); r["image"].save(b, format="JPEG")
-                        z.writestr(r["nom"], b.getvalue())
-                st.success(f"{message_succes} ({len(selection)} photos mises en quarantaine)")
-                st.download_button("⬇️ Télécharger la quarantaine (.zip)", buf.getvalue(),
-                                   "quarantaine_slate.zip", "application/zip")
-                st.caption("Conseil : confiez ce zip à un(e) 'Gardien(ne)' de confiance, ou stockez-le hors de vue "
-                           "avec un verrou temporel (ex : ne pas rouvrir avant 3 mois).")
-
-            else:
-                traitees = 0
-                barre = st.progress(0)
-                for i, r in enumerate(selection):
-                    try:
-                        if "Flou" in action:
-                            img_finale = flou_cinematique(r["image"], r["boxes"])
-                        elif "Emoji" in action:
-                            img_finale = sticker_emoji(r["image"], r["boxes"])
-                        else:
-                            if not api_key:
-                                st.error("Clé API Stability requise pour l'inpainting.")
-                                break
-                            masque = generer_masque(r["image"], r["boxes"])
-                            img_finale = inpainting_stability(r["image"], masque, api_key, prompt_inpainting)
-
-                        a, b = st.columns(2)
-                        a.image(r["image"], caption=f"Avant — {r['nom']}", use_container_width=True)
-                        b.image(img_finale, caption="Après ✨", use_container_width=True)
-
-                        buf = io.BytesIO(); img_finale.save(buf, format="JPEG")
-                        st.download_button(f"⬇️ Télécharger {r['nom']}", buf.getvalue(),
-                                           f"cleanslate_{r['nom']}", "image/jpeg", key=f"dl_{i}")
-                        traitees += 1
-                    except Exception as e:
-                        st.warning(f"Erreur sur {r['nom']} : {e}")
-                    barre.progress((i + 1) / len(selection))
-
-                if traitees:
-                    st.balloons()
-                    st.success(f"{message_succes} ({traitees} photos traitées)")
-
-# =============================================================
-# PIED DE PAGE — CONFIDENTIALITÉ & RESET
-# =============================================================
-st.divider()
-col_a, col_b = st.columns(2)
-with col_a:
-    if st.button("🧹 Réinitialiser la session"):
-        st.session_state.scan = None
-        st.session_state.target_encoding = None
+if st.session_state.etape == "accueil":
+    st.markdown("<div class='step-label'>ONBOARDING</div>", unsafe_allow_html=True)
+    logo()
+    st.markdown("<div class='hero-phoenix'>🐦‍🔥</div>", unsafe_allow_html=True)
+    st.markdown("<div class='hero-title'>Project Slate.</div>", unsafe_allow_html=True)
+    st.markdown("<p class='hero-sub'>Prêt(e) à tourner la page ?<br>"
+                "L'IA s'occupe du tri numérique, à votre rythme.</p>", unsafe_allow_html=True)
+    st.write("")
+    if st.button("Connecter ma galerie"):
+        st.session_state.etape = "casting"
         st.rerun()
-with col_b:
-    st.caption("🔒 RGPD : seuls les pixels affichés et l'empreinte de la cible existent le temps de la session. "
-               "Aucun visage tiers n'est mémorisé. 'Réinitialiser' efface tout.")
+    st.markdown("<p class='secure-note'>🔒 <b>Totalement sécurisé.</b> L'IA travaille 100% en local.</p>",
+                unsafe_allow_html=True)
+
+# =============================================================
+# ÉCRAN 2 — LE CASTING + GALERIE + SCAN
+# =============================================================
+else:
+    st.markdown("<div class='step-label'>IDENTIFICATION</div>", unsafe_allow_html=True)
+    logo()
+
+    st.write("### 🧭 De qui souhaitez-vous vous détacher aujourd'hui ?")
+    type_rupture = st.radio(
+        "Parcours",
+        ["💔 Une relation amoureuse (Parcours Nouvelle Page)",
+         "🛑 Une relation amicale (Parcours Tri Sélectif)"],
+        index=0, label_visibility="collapsed",
+    )
+
+    if "amoureuse" in type_rupture:
+        titre_casting = "'Le Casting' — Qui est votre ex-partenaire ?"
+        message_succes = "🎉 Bravo. Vous venez de tourner la page — prenez soin de votre cœur."
+        prompt_defaut = "empty scenic background, natural continuation, realistic photo, high resolution"
+    else:
+        titre_casting = "'Le Casting' — Qui est l'ancien(ne) ami(e) ?"
+        message_succes = "🎉 Limites posées. Place aux relations saines et équilibrées."
+        prompt_defaut = "group of friends smiling, seamless background continuation, realistic photo, high resolution"
+
+    st.write(f"### 📸 {titre_casting}")
+    fichier_ref = st.file_uploader("Une photo claire de la personne, seule de préférence",
+                                   type=["jpg", "jpeg", "png"])
+
+    st.write("### 📂 Votre galerie à analyser")
+    fichiers_galerie = st.file_uploader("Glissez-déposez les photos à trier / nettoyer",
+                                        type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+
+    with st.expander("🎛️ Réglages"):
+        seuil = st.slider("Seuil de correspondance (plus haut = plus strict)", 0.25, 0.50, 0.36, 0.01)
+        st.caption("L'IA rate des photos ? Baissez le seuil. Elle détecte d'autres personnes ? Montez-le.")
+
+    if fichier_ref and fichiers_galerie:
+        if st.button("🚀 Lancer le scan"):
+            img_ref = Image.open(fichier_ref).convert("RGB")
+            enc = encodage_reference(img_ref)
+            if enc is None:
+                st.error("Aucun visage détecté sur la photo de référence. Essayez une photo plus nette, de face.")
+            else:
+                st.session_state.target_encoding = enc
+                resultats = []
+                barre = st.progress(0, text="Analyse en cours…")
+                for i, f in enumerate(fichiers_galerie):
+                    img = Image.open(f).convert("RGB")
+                    boxes = detecter_cible(img, enc, seuil)
+                    if boxes:
+                        resultats.append({"nom": f.name, "image": img, "boxes": boxes, "garder": True})
+                    pct = int((i + 1) / len(fichiers_galerie) * 100)
+                    barre.progress((i + 1) / len(fichiers_galerie),
+                                   text=f"🧠 {pct}% de ton espace mental libéré…")
+                barre.empty()
+                st.session_state.scan = {"total": len(fichiers_galerie), "resultats": resultats}
+                if resultats:
+                    st.balloons()
+
+    # =========================================================
+    # ÉCRAN 3 — 'DIAGNOSTIC' (anneau + cartes d'action)
+    # =========================================================
+    if st.session_state.scan:
+        scan = st.session_state.scan
+        n = len(scan["resultats"])
+        total = max(1, scan["total"])
+        pct = int(n / total * 100)
+
+        st.divider()
+        st.markdown("<div class='step-label'>TABLEAU DE BORD</div>", unsafe_allow_html=True)
+        st.markdown("<h3 style='text-align:center'>'Diagnostic'</h3>", unsafe_allow_html=True)
+
+        ring = ("<div class='ring' style='background:conic-gradient(#6366f1 0% " + str(max(6, pct)) +
+                "%, #a855f7 " + str(max(6, pct)) + "% " + str(max(8, pct + 2)) +
+                "%, #e8e8f3 " + str(max(8, pct + 2)) + "% 100%)'>"
+                "<div class='ring-inner'><div class='ring-num'>" + str(n) + "</div>"
+                "<div class='ring-label'>Photos identifiées</div></div></div>")
+        st.markdown(ring, unsafe_allow_html=True)
+        st.markdown(f"<p style='text-align:center;color:#6b7280 !important'>sur {scan['total']} photos analysées</p>",
+                    unsafe_allow_html=True)
+
+        if n == 0:
+            st.info("Aucune photo contenant la cible n'a été détectée. Essayez de baisser le seuil dans les Réglages.")
+        else:
+            with st.expander("🖼️ Voir et sélectionner les photos détectées", expanded=False):
+                cols = st.columns(3)
+                for i, r in enumerate(scan["resultats"]):
+                    with cols[i % 3]:
+                        st.image(r["image"], use_container_width=True)
+                        r["garder"] = st.checkbox(r["nom"], value=r["garder"], key=f"chk_{i}")
+            selection = [r for r in scan["resultats"] if r["garder"]]
+            st.markdown(f"<p style='text-align:center'><b>{len(selection)} photo(s) sélectionnée(s)</b></p>",
+                        unsafe_allow_html=True)
+
+            action = st.radio("Action", [
+                "🗃️ Quarantaine — Archiver loin des yeux",
+                "🪄 Remplacer l'Ex par IA — Sticker, flou, ou décor",
+                "🗑️ Le Grand Saut — Supprimer définitivement",
+            ], label_visibility="collapsed")
+
+            sous_mode, api_key, prompt_inpainting = None, None, prompt_defaut
+            if "Remplacer" in action:
+                sous_mode = st.radio("Style de remplacement",
+                                     ["🌫️ Flou cinématique (gratuit)", "🙂 Sticker emoji (gratuit)",
+                                      "✨ Effacer & recréer le décor (Stability AI)"],
+                                     horizontal=False)
+                if "Stability" in sous_mode:
+                    api_key = st.text_input("🔑 Clé API Stability AI", type="password", placeholder="sk-...")
+                    prompt_inpainting = st.text_input("Prompt de remplacement", value=prompt_defaut)
+                    st.caption("💡 Idées virales : *'a cute golden retriever'* ou *'a fluffy llama'*.")
+
+            confirme = True
+            if "Grand Saut" in action:
+                st.warning("⚠️ Le Grand Saut retire ces photos de la session, définitivement. "
+                           "Pensez à les supprimer ensuite de votre galerie.")
+                confirme = st.checkbox("Je comprends que cette action est irréversible.")
+
+            if selection and st.button("🚀 Lancer la libération numérique", disabled=not confirme):
+
+                if "Quarantaine" in action:
+                    buf = io.BytesIO()
+                    with zipfile.ZipFile(buf, "w") as z:
+                        for r in selection:
+                            b = io.BytesIO(); r["image"].save(b, format="JPEG")
+                            z.writestr(r["nom"], b.getvalue())
+                    st.success(f"{message_succes} ({len(selection)} photos mises en quarantaine)")
+                    st.download_button("⬇️ Télécharger la quarantaine (.zip)", buf.getvalue(),
+                                       "quarantaine_slate.zip", "application/zip")
+                    st.caption("Conseil : confiez ce zip à un(e) 'Gardien(ne)' de confiance, avec un verrou "
+                               "temporel (ex : ne pas rouvrir avant 3 mois).")
+
+                elif "Grand Saut" in action:
+                    noms = [r["nom"] for r in selection]
+                    scan["resultats"] = [r for r in scan["resultats"] if r["nom"] not in noms]
+                    st.balloons()
+                    st.success(f"{message_succes} ({len(noms)} photos supprimées de la session)")
+                    st.caption("Dans l'app mobile, ces photos seront envoyées dans une corbeille 30 jours "
+                               "avant suppression définitive de la galerie.")
+
+                else:
+                    traitees = 0
+                    barre = st.progress(0)
+                    for i, r in enumerate(selection):
+                        try:
+                            if "Flou" in sous_mode:
+                                img_finale = flou_cinematique(r["image"], r["boxes"])
+                            elif "emoji" in sous_mode:
+                                img_finale = sticker_emoji(r["image"], r["boxes"])
+                            else:
+                                if not api_key:
+                                    st.error("Clé API Stability requise pour l'inpainting.")
+                                    break
+                                masque = generer_masque(r["image"], r["boxes"])
+                                img_finale = inpainting_stability(r["image"], masque, api_key, prompt_inpainting)
+
+                            a, b = st.columns(2)
+                            a.image(r["image"], caption=f"Avant — {r['nom']}", use_container_width=True)
+                            b.image(img_finale, caption="Après ✨", use_container_width=True)
+                            buf = io.BytesIO(); img_finale.save(buf, format="JPEG")
+                            st.download_button(f"⬇️ Télécharger {r['nom']}", buf.getvalue(),
+                                               f"cleanslate_{r['nom']}", "image/jpeg", key=f"dl_{i}")
+                            traitees += 1
+                        except Exception as e:
+                            st.warning(f"Erreur sur {r['nom']} : {e}")
+                        barre.progress((i + 1) / len(selection))
+
+                    if traitees:
+                        st.balloons()
+                        st.success(f"{message_succes} ({traitees} photos traitées)")
+
+    # ---- Pied de page ----
+    st.divider()
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("🧹 Réinitialiser la session"):
+            st.session_state.scan = None
+            st.session_state.target_encoding = None
+            st.session_state.etape = "accueil"
+            st.rerun()
+    with col_b:
+        st.caption("🔒 RGPD : seuls les pixels affichés et l'empreinte de la cible existent le temps de la session. "
+                   "Aucun visage tiers n'est mémorisé.")
